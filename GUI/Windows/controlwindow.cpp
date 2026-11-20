@@ -67,6 +67,7 @@ ControlWindow::ControlWindow(SystemState* state_, CommandParser* parser_, Contro
     toolsMenu(nullptr),
     performanceMenu(nullptr),
     helpMenu(nullptr),
+    recentSettingsMenu(nullptr),
     runAction(nullptr),
     stopAction(nullptr),
     selectFilenameAction(nullptr),
@@ -434,16 +435,12 @@ void ControlWindow::dropEvent(QDropEvent *event)
 
     updateForLoad();
 
-    QSettings settings;
     QString filename = event->mimeData()->urls().at(0).toLocalFile();
 
     bool loadSuccess = loadSettingsFile(filename);
 
     if (loadSuccess) {
-        QFileInfo fileInfo(filename);
-        settings.beginGroup(ControllerTypeSettingsGroup[(int)state->getControllerTypeEnum()]);
-        settings.setValue("settingsDirectory", fileInfo.absolutePath());
-        settings.endGroup();
+        rememberSettingsFile(filename);
     }
     updateForStop();
 }
@@ -714,6 +711,9 @@ void ControlWindow::createMenus()
     // File menu
     fileMenu = menuBar()->addMenu(tr("File"));
     fileMenu->addAction(loadSettingsAction);
+    recentSettingsMenu = fileMenu->addMenu(tr("Recent Settings"));
+    connect(recentSettingsMenu, SIGNAL(aboutToShow()), this, SLOT(updateRecentSettingsMenu()));
+    updateRecentSettingsMenu();  // Populate once so the submenu is not empty before it is first shown.
     fileMenu->addAction(saveSettingsAction);
     fileMenu->addSeparator();
     fileMenu->addAction(defaultSettingsAction);
@@ -927,6 +927,7 @@ void ControlWindow::updateForRun()
     }
 
     loadSettingsAction->setEnabled(false);
+    setRecentSettingsMenuEnabled(false);
     defaultSettingsAction->setEnabled(false);
     saveSettingsAction->setEnabled(false);
 
@@ -981,6 +982,7 @@ void ControlWindow::updateForLoad()
     }
 
     loadSettingsAction->setEnabled(false);
+    setRecentSettingsMenuEnabled(false);
     defaultSettingsAction->setEnabled(false);
     saveSettingsAction->setEnabled(false);
 
@@ -1047,6 +1049,7 @@ void ControlWindow::updateForStop()
     }
 
     loadSettingsAction->setEnabled(true);
+    setRecentSettingsMenuEnabled(true);
     defaultSettingsAction->setEnabled(true);
     saveSettingsAction->setEnabled(true);
 
@@ -1725,25 +1728,132 @@ QString ControlWindow::loadSettings()
     QSettings settings;
     settings.beginGroup(ControllerTypeSettingsGroup[(int)state->getControllerTypeEnum()]);
     QString defaultDirectory = settings.value("settingsDirectory", ".").toString();
+    settings.endGroup();
 
     QString filename = QFileDialog::getOpenFileName(this, "Select Settings File", defaultDirectory, "XML files (*.xml)");
 
     // If user clicked 'cancel', then abort.
     if (filename.isEmpty()) {
         updateForStop();
-        settings.endGroup();
         return QString("");
     }
 
     bool loadSuccess = loadSettingsFile(filename);
 
     if (loadSuccess) {
-        QFileInfo fileInfo(filename);
-        settings.setValue("settingsDirectory", fileInfo.absolutePath());
-        settings.endGroup();
+        rememberSettingsFile(filename);
     }
     updateForStop();
     return filename;
+}
+
+// Load a settings file chosen from the File > Recent Settings submenu, with the same checks as Load Settings.
+void ControlWindow::loadRecentSettingsFile(const QString &filename)
+{
+    if (state->running) return;
+
+    if (!QFileInfo::exists(filename)) {
+        QMessageBox::warning(this, tr("Settings File Not Found"),
+                             tr("The settings file ") + QDir::toNativeSeparators(filename) +
+                             tr(" could not be found. It has been removed from the list of recent settings files."));
+        QStringList files = recentSettingsFiles();
+        files.removeAll(filename);
+        setRecentSettingsFiles(files);
+        return;
+    }
+
+    if (stimParamWarning()) return;
+
+    updateForLoad();
+    if (loadSettingsFile(filename)) {
+        rememberSettingsFile(filename);
+    }
+    updateForStop();
+}
+
+// Recent settings files are kept per controller type, like settingsDirectory, because a settings file
+// saved with one controller type cannot be loaded with another.
+QStringList ControlWindow::recentSettingsFiles() const
+{
+    QSettings settings;
+    settings.beginGroup(ControllerTypeSettingsGroup[(int)state->getControllerTypeEnum()]);
+    QStringList files = settings.value("recentSettingsFiles").toStringList();
+    settings.endGroup();
+    return files;
+}
+
+void ControlWindow::setRecentSettingsFiles(const QStringList &files)
+{
+    QSettings settings;
+    settings.beginGroup(ControllerTypeSettingsGroup[(int)state->getControllerTypeEnum()]);
+    settings.setValue("recentSettingsFiles", files);
+    settings.endGroup();
+}
+
+// Record a settings file that was just loaded or saved: remember its directory for the next file dialog,
+// and move it to the top of the recent settings list.
+void ControlWindow::rememberSettingsFile(const QString &filename)
+{
+    const int MaxRecentSettingsFiles = 10;
+
+    QFileInfo fileInfo(filename);
+    QString path = fileInfo.absoluteFilePath();
+
+    QSettings settings;
+    settings.beginGroup(ControllerTypeSettingsGroup[(int)state->getControllerTypeEnum()]);
+    settings.setValue("settingsDirectory", fileInfo.absolutePath());
+    settings.endGroup();
+
+#ifdef Q_OS_WIN
+    const Qt::CaseSensitivity pathCase = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity pathCase = Qt::CaseSensitive;
+#endif
+    QStringList files = recentSettingsFiles();
+    for (int i = files.size() - 1; i >= 0; --i) {
+        if (QFileInfo(files.at(i)).absoluteFilePath().compare(path, pathCase) == 0) files.removeAt(i);
+    }
+    files.prepend(path);
+    while (files.size() > MaxRecentSettingsFiles) files.removeLast();
+    setRecentSettingsFiles(files);
+}
+
+// Rebuild the File > Recent Settings submenu from QSettings each time it is about to be shown.
+void ControlWindow::updateRecentSettingsMenu()
+{
+    if (!recentSettingsMenu) return;
+    recentSettingsMenu->clear();
+
+    QStringList files = recentSettingsFiles();
+    if (files.isEmpty()) {
+        QAction *noneAction = recentSettingsMenu->addAction(tr("(No recent settings files)"));
+        noneAction->setEnabled(false);
+        return;
+    }
+
+    QFontMetrics metrics(recentSettingsMenu->font());
+    for (int i = 0; i < files.size(); ++i) {
+        const QString filename = files.at(i);
+        QString shownName = metrics.elidedText(QDir::toNativeSeparators(filename), Qt::ElideMiddle, 600);
+        shownName.replace("&", "&&");  // A single '&' would be taken as a menu accelerator.
+        QString label = (i < 9) ? QString("&%1  %2").arg(QString::number(i + 1), shownName) : shownName;
+        QAction *action = recentSettingsMenu->addAction(label);
+        connect(action, &QAction::triggered, this, [this, filename]() { loadRecentSettingsFile(filename); });
+    }
+
+    recentSettingsMenu->addSeparator();
+    QAction *clearAction = recentSettingsMenu->addAction(tr("Clear Recent Settings"));
+    connect(clearAction, SIGNAL(triggered()), this, SLOT(clearRecentSettingsSlot()));
+}
+
+void ControlWindow::clearRecentSettingsSlot()
+{
+    setRecentSettingsFiles(QStringList());
+}
+
+void ControlWindow::setRecentSettingsMenuEnabled(bool enabled)
+{
+    if (recentSettingsMenu) recentSettingsMenu->menuAction()->setEnabled(enabled);
 }
 
 void ControlWindow::saveSettingsSlot()
@@ -1767,7 +1877,8 @@ void ControlWindow::saveSettingsSlot()
     // Generate display settings string to record state of multi-column display, scroll bars, pinned waveforms, etc.
     state->displaySettings->setValue(multiColumnDisplay->getDisplaySettingsString());
 
-    if (!state->saveGlobalSettings(filename)) qDebug() << "Failure writing XML Global Settings";
+    if (state->saveGlobalSettings(filename)) rememberSettingsFile(filename);
+    else qDebug() << "Failure writing XML Global Settings";
 }
 
 // Load stimulation settings from *.xml file.

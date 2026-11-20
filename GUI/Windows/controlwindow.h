@@ -155,6 +155,8 @@ private slots:
     void loadSettingsSlot();
     void defaultSettingsSlot();
     void saveSettingsSlot();
+    void updateRecentSettingsMenu();
+    void clearRecentSettingsSlot();
     void loadStimSettingsSlot();
     void saveStimSettingsSlot();
     void undoSlot();
@@ -230,6 +232,7 @@ private:
     QMenu *toolsMenu;
     QMenu *performanceMenu;
     QMenu *helpMenu;
+    QMenu *recentSettingsMenu;
 
     QAction *runAction;
     QAction *stopAction;
@@ -336,6 +339,11 @@ private:
     double mainCpuLoad;
 
     QString loadSettings();
+    void loadRecentSettingsFile(const QString &filename);
+    QStringList recentSettingsFiles() const;
+    void setRecentSettingsFiles(const QStringList &files);
+    void rememberSettingsFile(const QString &filename);
+    void setRecentSettingsMenuEnabled(bool enabled);
 
     void updateForFilename(bool valid);
     void updateLiveNotesDialog();
