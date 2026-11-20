@@ -79,6 +79,11 @@ void AbstractPanel::updateForLoad()
     setEnabled(false);
 }
 
+void AbstractPanel::rescanPorts()
+{
+    if (configureTab) configureTab->rescanPorts();
+}
+
 void AbstractPanel::promptColorChange()
 {
     // Identify all currently selected channels.

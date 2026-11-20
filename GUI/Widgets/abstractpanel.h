@@ -44,6 +44,7 @@ public:
     virtual void updateForRun() = 0;
     void updateForLoad();
     virtual void updateForStop() = 0;
+    void rescanPorts();  // Same as clicking the Rescan Ports button on the Configure tab.
     virtual void updateSlidersEnabled(YScaleUsed yScaleUsed) = 0;
     virtual YScaleUsed slidersEnabled() const = 0;
 

@@ -100,6 +100,7 @@ ControlWindow::ControlWindow(SystemState* state_, CommandParser* parser_, Contro
     loadSettingsAction(nullptr),
     defaultSettingsAction(nullptr),
     saveSettingsAction(nullptr),
+    rescanBeforeRecentLoadAction(nullptr),
     loadStimSettingsAction(nullptr),
     saveStimSettingsAction(nullptr),
     exitAction(nullptr),
@@ -460,6 +461,12 @@ void ControlWindow::createActions()
     saveSettingsAction = new QAction(tr("Save Settings"), this);
     saveSettingsAction->setShortcut(tr("Ctrl+S"));
     connect(saveSettingsAction, SIGNAL(triggered()), this, SLOT(saveSettingsSlot()));
+
+    // Shown in the File > Recent Settings submenu. Remembered across sessions in QSettings.
+    rescanBeforeRecentLoadAction = new QAction(tr("Rescan Ports Before Loading"), this);
+    rescanBeforeRecentLoadAction->setCheckable(true);
+    rescanBeforeRecentLoadAction->setChecked(QSettings().value("rescanBeforeLoadingRecentSettings", false).toBool());
+    connect(rescanBeforeRecentLoadAction, SIGNAL(toggled(bool)), this, SLOT(rescanBeforeRecentLoadSlot(bool)));
 
     exitAction = new QAction(tr("Exit"), this);
     exitAction->setShortcut(tr("Ctrl+Q"));
@@ -1764,11 +1771,23 @@ void ControlWindow::loadRecentSettingsFile(const QString &filename)
 
     if (stimParamWarning()) return;
 
+    // Optionally rescan ports first, exactly as if the user had clicked Rescan Ports, so the channel list
+    // matches the headstages connected now before the settings file is applied to it.
+    if (rescanBeforeRecentLoadAction && rescanBeforeRecentLoadAction->isChecked()) {
+        controlPanel->rescanPorts();
+    }
+
     updateForLoad();
     if (loadSettingsFile(filename)) {
         rememberSettingsFile(filename);
     }
     updateForStop();
+}
+
+void ControlWindow::rescanBeforeRecentLoadSlot(bool enable)
+{
+    QSettings settings;
+    settings.setValue("rescanBeforeLoadingRecentSettings", enable);
 }
 
 // Recent settings files are kept per controller type, like settingsDirectory, because a settings file
@@ -1828,6 +1847,8 @@ void ControlWindow::updateRecentSettingsMenu()
     if (files.isEmpty()) {
         QAction *noneAction = recentSettingsMenu->addAction(tr("(No recent settings files)"));
         noneAction->setEnabled(false);
+        recentSettingsMenu->addSeparator();
+        recentSettingsMenu->addAction(rescanBeforeRecentLoadAction);
         return;
     }
 
@@ -1842,6 +1863,7 @@ void ControlWindow::updateRecentSettingsMenu()
     }
 
     recentSettingsMenu->addSeparator();
+    recentSettingsMenu->addAction(rescanBeforeRecentLoadAction);  // Owned by ControlWindow, so clear() does not delete it.
     QAction *clearAction = recentSettingsMenu->addAction(tr("Clear Recent Settings"));
     connect(clearAction, SIGNAL(triggered()), this, SLOT(clearRecentSettingsSlot()));
 }

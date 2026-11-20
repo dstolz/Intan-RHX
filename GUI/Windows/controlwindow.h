@@ -157,6 +157,7 @@ private slots:
     void saveSettingsSlot();
     void updateRecentSettingsMenu();
     void clearRecentSettingsSlot();
+    void rescanBeforeRecentLoadSlot(bool enable);
     void loadStimSettingsSlot();
     void saveStimSettingsSlot();
     void undoSlot();
@@ -269,6 +270,7 @@ private:
     QAction *loadSettingsAction;
     QAction *defaultSettingsAction;
     QAction *saveSettingsAction;
+    QAction *rescanBeforeRecentLoadAction;
     QAction *loadStimSettingsAction;
     QAction *saveStimSettingsAction;
     QAction *exitAction;
