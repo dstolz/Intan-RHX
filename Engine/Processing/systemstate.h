@@ -121,8 +121,18 @@ public:
     void printProbeMapSettings() const;
 
     void setupGlobalSettingsLoadSave(ControllerInterface* controllerInterface);
-    bool loadGlobalSettings(const QString& filename, QString &errorMessage) const;
+    bool loadGlobalSettings(const QString& filename, QString &errorMessage);
     bool saveGlobalSettings(const QString& filename) const;
+
+    // Channel settings from the last loaded settings file that were skipped because those channels were not detected
+    // (e.g. no headstage connected). They are kept until another settings file is loaded, and applied by
+    // applyPendingChannelSettings() once the channels are detected (after a rescan).
+    bool hasPendingChannelSettings() const { return !pendingSettingsChannels.isEmpty(); }
+    QString pendingChannelSettingsFilename() const { return pendingSettingsFilename; }
+    // Returns the native names of the channels that settings were applied to (empty if none). displaySettingsString
+    // receives the settings file's display layout when anything was applied, so the caller can restore it.
+    QStringList applyPendingChannelSettings(QString &errorMessage, QString &displaySettingsString);
+    void clearPendingChannelSettings();
 
     void updateForChangeHeadstages();
 
@@ -419,6 +429,10 @@ private:
     int lastTimestamp;
 
     XMLInterface* globalSettingsInterface;
+
+    QString pendingSettingsFilename;
+    QByteArray pendingSettingsFileContents;
+    QStringList pendingSettingsChannels;
 
     void queueStateChangedSignal();
 

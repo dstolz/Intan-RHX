@@ -40,6 +40,7 @@
 #include "referenceselectdialog.h"
 #include "controlwindow.h"
 #include "scrollablemessageboxdialog.h"
+#include "settingsloadmessagedialog.h"
 
 ControlWindow::ControlWindow(SystemState* state_, CommandParser* parser_, ControllerInterface* controllerInterface_, AbstractRHXController* rhxController_) :
     QMainWindow(nullptr), // Since the parent isn't a QMainWindow but a QDialog, just pass a nullptr
@@ -883,6 +884,34 @@ void ControlWindow::updateForChangeHeadstages()
     }
 }
 
+// Called (queued) after every port rescan. If the last loaded settings file had settings for channels that were not
+// detected when it was loaded (e.g. no headstage connected), and those channels are detected now, apply their settings
+// and restore the file's display layout, so the result is the same as loading the file with the headstage connected.
+void ControlWindow::applyPendingChannelSettings()
+{
+    if (!state->hasPendingChannelSettings() || state->running) return;
+
+    QString filename = state->pendingChannelSettingsFilename();
+    QString errorMessage;
+    QString displaySettingsString;
+    QStringList appliedChannels = state->applyPendingChannelSettings(errorMessage, displaySettingsString);
+    if (appliedChannels.isEmpty()) return;
+
+    if (!displaySettingsString.isEmpty()) {
+        multiColumnDisplay->restoreFromDisplaySettingsString(displaySettingsString);
+    }
+    state->forceUpdate();
+
+    updateStatusBar(tr("Applied channel settings from ") + QFileInfo(filename).fileName() + tr(" to ") +
+                    QString::number(appliedChannels.size()) + tr(" newly detected channels."));
+
+    if (!errorMessage.isEmpty()) {
+        SettingsLoadMessageDialog msgBox(tr("Problem applying channel settings"), filename, errorMessage,
+                                         SettingsLoadMessageDialog::Warning, false, this);
+        msgBox.exec();
+    }
+}
+
 void ControlWindow::updateForFilename(bool valid)
 {
     if (state->testMode->getValue()) return;
@@ -1684,11 +1713,23 @@ bool ControlWindow::loadSettingsFile(QString filename, bool silent)
     bool loadSuccess = state->loadGlobalSettings(filename, errorMessage);
 
     if (!loadSuccess && !silent) {
-        ScrollableMessageBoxDialog msgBox(this, tr("Error: Could not load settings file " ) + filename, errorMessage);
+        SettingsLoadMessageDialog msgBox(tr("Could not load settings file"), filename, errorMessage,
+                                         SettingsLoadMessageDialog::Error, false, this);
         msgBox.exec();
     } else if (!errorMessage.isEmpty() && !silent) {
-        ScrollableMessageBoxDialog msgBox(this, tr("Warning: Problem loading settings file " ) + filename, errorMessage);
+        // Offer a rescan when some channel settings were skipped because their channels weren't detected; the rescan
+        // applies them (via applyPendingChannelSettings) if the headstage is now connected. Not available in playback,
+        // where the Configure tab's Rescan Ports button is disabled too.
+        bool offerRescan = state->hasPendingChannelSettings() && !state->playback->getValue() && !state->running;
+        SettingsLoadMessageDialog msgBox(tr("Settings loaded with warnings"), filename, errorMessage,
+                                         SettingsLoadMessageDialog::Warning, offerRescan, this);
         msgBox.exec();
+        if (msgBox.rescanRequested()) {
+            // Deferred so the caller finishes its load (updateForLoad/updateForStop) before the rescan starts.
+            QTimer::singleShot(0, this, [this]() {
+                if (!state->running) controlPanel->rescanPorts();
+            });
+        }
     }
     controllerInterface->updateChipCommandLists(false);  // Update amplifier bandwidth settings.
     restoreDisplaySettings();
@@ -2080,7 +2121,8 @@ void ControlWindow::updateMenus()
         autoGroupChannelsAction->setEnabled(true);
         restoreOrderChannelsAction->setEnabled(true);
         alphabetizeChannelsAction->setEnabled(true);
-        setSpikeThresholdsAction->setEnabled(true);
+        // Spike Scope's auto threshold on all channels would overwrite whatever this dialog sets.
+        setSpikeThresholdsAction->setEnabled(!(spikeSortingDialog && spikeSortingDialog->autoThresholdAllChannelsActive()));
     }
 
     bool enableTools = state->headstagePresent->getValue();

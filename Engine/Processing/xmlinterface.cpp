@@ -43,8 +43,11 @@ XMLInterface::XMLInterface(SystemState *state_, ControllerInterface* controllerI
 {
 }
 
-bool XMLInterface::loadFile(const QString &filename, QString &errorMessage, bool stimLegacy, bool probeMap, bool stimOnly) const
+bool XMLInterface::loadFile(const QString &filename, QString &errorMessage, bool stimLegacy, bool probeMap, bool stimOnly,
+                            QStringList *missingChannels, QByteArray *fileContents) const
 {
+    if (missingChannels) missingChannels->clear();
+
     QFile file(filename);
 
     if (!file.open(QIODevice::ReadOnly)) {
@@ -53,6 +56,7 @@ bool XMLInterface::loadFile(const QString &filename, QString &errorMessage, bool
     }
     QByteArray byteArray = file.readAll();
     file.close();
+    if (fileContents) *fileContents = byteArray;
 
     if (stimLegacy) {
         if (!parseStimLegacy(byteArray, errorMessage)) {
@@ -60,7 +64,7 @@ bool XMLInterface::loadFile(const QString &filename, QString &errorMessage, bool
             return false;
         }
     } else {
-        if (!parseByteArray(byteArray, errorMessage, probeMap, stimOnly)) {
+        if (!parseByteArray(byteArray, errorMessage, probeMap, stimOnly, missingChannels)) {
             qDebug() << "Failure parsing XML data. Error message: " << errorMessage;
             return false;
         }
@@ -84,7 +88,8 @@ bool XMLInterface::saveFile(const QString &filename) const
     return true;
 }
 
-bool XMLInterface::parseByteArray(const QByteArray &byteArray, QString &errorMessage, bool probeMap, bool stimOnly) const
+bool XMLInterface::parseByteArray(const QByteArray &byteArray, QString &errorMessage, bool probeMap, bool stimOnly,
+                                  QStringList *missingChannels) const
 {
     state->holdUpdate();
     bool ignoreStimParameters = false;
@@ -109,7 +114,7 @@ bool XMLInterface::parseByteArray(const QByteArray &byteArray, QString &errorMes
         }
     } else {
         if (!stimOnly) {
-            if (!checkConsistentChannels(byteArray, errorMessage)) {
+            if (!checkConsistentChannels(byteArray, errorMessage, missingChannels)) {
                 state->releaseUpdate();
                 return false;
             }
@@ -133,6 +138,82 @@ bool XMLInterface::parseByteArray(const QByteArray &byteArray, QString &errorMes
     }
     state->releaseUpdate();
     return true;
+}
+
+bool XMLInterface::applyChannelSettings(const QByteArray &byteArray, const QSet<QString> &channelFilter, QString &errorMessage) const
+{
+    if (channelFilter.isEmpty()) return true;
+
+    bool ignoreStimParameters = false;
+    QString documentStartMessage;
+    if (!parseDocumentStart(byteArray, documentStartMessage, ignoreStimParameters)) {
+        errorMessage.append(documentStartMessage);
+        return false;
+    }
+
+    state->holdUpdate();
+    bool success = true;
+    if (includeParameters == XMLIncludeGlobalParameters || includeParameters == XMLIncludeSpikeSortingParameters) {
+        if (!parseSignalGroups(byteArray, errorMessage, &channelFilter)) success = false;
+    }
+    if (success && includeParameters == XMLIncludeGlobalParameters) {
+        parseGeneralConfigChannelItems(byteArray, channelFilter);
+    }
+    if (success && state->getControllerTypeEnum() == ControllerStimRecord && !ignoreStimParameters &&
+            (includeParameters == XMLIncludeGlobalParameters || includeParameters == XMLIncludeStimParameters)) {
+        if (!parseStimParameters(byteArray, errorMessage, &channelFilter)) success = false;
+    }
+    state->releaseUpdate();
+    return success;
+}
+
+// Apply the GeneralConfig items that refer to a channel (ChannelNameItems such as ISIChannel, and the
+// TCPDataOutputChannels list), but only for channels in channelFilter. All other GeneralConfig items are left alone.
+void XMLInterface::parseGeneralConfigChannelItems(const QByteArray &byteArray, const QSet<QString> &channelFilter) const
+{
+    QXmlStreamReader stream(byteArray);
+    while (stream.name() != QStringLiteral("GeneralConfig")) {
+        stream.readNextStartElement();
+        if (stream.atEnd()) return;
+    }
+
+    const QXmlStreamAttributes attributes = stream.attributes();
+    for (const auto& attribute : attributes) {
+        QString attributeName = attribute.name().toString();
+        QString attributeValue = attribute.value().toString();
+
+        if (attributeName.toLower() == "tcpdataoutputchannels") {
+            const QStringList tcpChannelList = attributeValue.split(',');
+            for (const QString& channelName : tcpChannelList) {
+                if (!channelFilter.contains(channelName)) continue;
+                Channel *thisChannel = state->signalSources->channelByName(channelName);
+                if (thisChannel) thisChannel->setOutputToTcp(true);
+            }
+            continue;
+        }
+
+        if (!channelFilter.contains(attributeValue)) continue;
+        StateSingleItem *singleItem = state->locateStateSingleItem(state->globalItems, attributeName);
+        if (dynamic_cast<ChannelNameItem*>(singleItem) && singleItem->getXMLGroup() == XMLGroupGeneral) {
+            singleItem->setValue(attributeValue);
+        }
+    }
+}
+
+QString XMLInterface::generalConfigAttribute(const QByteArray &byteArray, const QString &attributeName)
+{
+    QXmlStreamReader stream(byteArray);
+    while (stream.name() != QStringLiteral("GeneralConfig")) {
+        stream.readNextStartElement();
+        if (stream.atEnd()) return QString();
+    }
+    const QXmlStreamAttributes attributes = stream.attributes();
+    for (const auto& attribute : attributes) {
+        if (attribute.name().toString().toLower() == attributeName.toLower()) {
+            return attribute.value().toString();
+        }
+    }
+    return QString();
 }
 
 bool XMLInterface::probeMapDetected(const QByteArray &byteArray, QString &errorMessage) const
@@ -427,7 +508,10 @@ bool XMLInterface::parseDocumentStart(const QByteArray &byteArray, QString &erro
     }
 }
 
-bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString &errorMessage) const
+// Compare the channels in the settings file with the channels the controller currently detects, and describe any
+// differences as warnings in errorMessage. Channels in the file that are not detected (for example, because no headstage
+// is connected) do not stop the load: their settings are skipped, and their names are returned in missingChannels.
+bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString &errorMessage, QStringList *missingChannels) const
 {
     QXmlStreamReader stream(byteArray);
 
@@ -442,6 +526,9 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
     // Create a parallel list of bools to represent if these channels have been initialized from XML
     std::vector<bool> channelsInitializedFromXML(allChannels.size(), false);
 
+    // Native names of channels in the file that the controller doesn't currently detect
+    QStringList missingChannelNames;
+
     // Get to SignalGroups
     while (!stream.atEnd()) {
 
@@ -451,6 +538,7 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
 
             // Handle if no signal groups at all are present by giving a warning and returning
             if (token == QXmlStreamReader::EndDocument) {
+                if (missingChannels) *missingChannels = missingChannelNames;
                 errorMessage.append("Warning: No signal groups, which contain all channel-specific settings, could be found in the settings file.");
                 return true;
             }
@@ -494,13 +582,14 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
             }
         }
 
-        // If the SignalGroup still can't be found, give an error and return
+        // If the SignalGroup still can't be found, give a warning. Its channels will be reported as missing below.
         if (!thisSignalGroup) {
-            errorMessage.append("Error: Settings file includes port " + portName + " but the Intan controller currently has no channels on a port of this name.");
-            return false;
+            if (errorMessage.length() > 0) {
+                errorMessage.append("\n");
+            }
+            errorMessage.append("Warning: Settings file includes port " + portName + " but the Intan controller currently has no port of this name.");
         }
 
-        bool missingChannel = false;
         // Parse Channels
         while (!stream.atEnd()) {
 
@@ -508,6 +597,24 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
             while (stream.name() != QStringLiteral("Channel")) {
                 QXmlStreamReader::TokenType token = stream.readNext();
                 if (token == QXmlStreamReader::EndDocument) {
+
+                    // List the channels in the file that the controller doesn't detect. Their settings are skipped.
+                    if (!missingChannelNames.isEmpty()) {
+                        if (errorMessage.length() > 0) {
+                            errorMessage.append("\n");
+                        }
+                        errorMessage.append("Warning: Settings for the following channels were not loaded because the Intan controller "
+                                            "does not currently detect them (for example, no headstage is connected). All other settings were loaded.");
+                        if (includeParameters == XMLIncludeGlobalParameters) {
+                            errorMessage.append(" These channel settings will be applied automatically if the channels are detected "
+                                                "when the ports are rescanned, until another settings file is loaded.");
+                        }
+                        errorMessage.append(":");
+                        for (const QString &name : missingChannelNames) {
+                            errorMessage.append("\n" + name);
+                        }
+                    }
+                    if (missingChannels) *missingChannels = missingChannelNames;
 
                     // Before exiting, check all initialized channels against all present channels, giving a warning if channels were not initialized
                     std::vector<std::string> uninitializedChannels = findUninitializedChannels(allChannels, channelsInitializedFromXML);
@@ -523,10 +630,9 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
                         }
                     }
 
-                    // Return true if all channels were consistent
-                    // Return true but with errorMessage populated with a warning if some present channels were uninitialized by XML
-                    // Return false with errorMessage populated with an error message if some channels from the XML are not present
-                    return !missingChannel;
+                    // Return true, with errorMessage populated with warnings if some present channels were uninitialized by XML
+                    // or if some channels from the XML are not present.
+                    return true;
                 }
             }
 
@@ -544,13 +650,11 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
 
             Channel *thisChannel = state->signalSources->channelByName(nativeChannelName);
 
-            // If the Channel couldn't be found (not connected to hardware), complain and flag missingChannel, ultimately resulting in an error.
+            // If the Channel couldn't be found (not connected to hardware), remember it so it can be reported as a warning.
             if (!thisChannel) {
-                if (!missingChannel) {
-                    errorMessage.append("Error: Settings file includes the following channels that are currently not detected by the Intan controller:");
-                    missingChannel = true;
+                if (!nativeChannelName.isEmpty() && !missingChannelNames.contains(nativeChannelName)) {
+                    missingChannelNames.append(nativeChannelName);
                 }
-                errorMessage.append("\n" + nativeChannelName);
             } else {
 
                 // If the Channel could be found, set its bool in channelsInitializedFromXML to true to flag that it was found.
@@ -571,6 +675,7 @@ bool XMLInterface::checkConsistentChannels(const QByteArray &byteArray, QString 
         stream.skipCurrentElement();
         stream.readNext();
     }
+    if (missingChannels) *missingChannels = missingChannelNames;
     return true;
 }
 
@@ -633,6 +738,17 @@ bool XMLInterface::parseGeneralConfig(const QByteArray &byteArray, QString &erro
 
                 if (changeItem) {
                     if (!singleItem->setValue(attributeValue)) {
+                        // A ChannelNameItem (e.g. ISIChannel) only accepts a channel that is currently present. If that
+                        // channel isn't detected (e.g. no headstage connected), skip this item with a warning rather than
+                        // aborting the load partway through.
+                        if (dynamic_cast<ChannelNameItem*>(singleItem)) {
+                            if (errorMessage.length() > 0) {
+                                errorMessage.append("\n");
+                            }
+                            errorMessage.append("Warning: " + singleItem->getParameterName() + " was not loaded because channel " +
+                                                attributeValue + " is not currently detected.");
+                            continue;
+                        }
                         errorMessage.append("Error: Failed to parse " + singleItem->getParameterName());
                         return false;
                     } else {
@@ -714,7 +830,9 @@ bool XMLInterface::parseGeneralConfig(const QByteArray &byteArray, QString &erro
     return true;
 }
 
-bool XMLInterface::parseSignalGroups(const QByteArray &byteArray, QString &errorMessage) const
+// If channelFilter is given, only Channel elements whose native name is in channelFilter are applied, and SignalGroup
+// (port) attributes are not applied.
+bool XMLInterface::parseSignalGroups(const QByteArray &byteArray, QString &errorMessage, const QSet<QString> *channelFilter) const
 {
     QXmlStreamReader stream(byteArray);
 
@@ -773,14 +891,17 @@ bool XMLInterface::parseSignalGroups(const QByteArray &byteArray, QString &error
             }
         }
 
-        // If the SignalGroup still can't be found, just skip this element
+        // If the SignalGroup still can't be found, just skip this element. (Step past its end tag so the next search
+        // doesn't stop on it.)
         if (!thisSignalGroup) {
             stream.skipCurrentElement();
+            stream.readNext();
             continue;
         }
 
-        // Iterate through all XML attributes
+        // Iterate through all XML attributes (unless only applying settings for selected channels)
         for (auto& attribute : attributes) {
+            if (channelFilter) break;
             // Get the attribute name and vlaue from the XML.
             QString attributeName = attribute.name().toString();
             QString attributeValue = attribute.value().toString();
@@ -847,9 +968,12 @@ bool XMLInterface::parseSignalGroups(const QByteArray &byteArray, QString &error
             }
 
             Channel * thisChannel = state->signalSources->channelByName(nativeChannelName);
-            // If the Channel couldn't be found, just skip this element
+            if (channelFilter && !channelFilter->contains(nativeChannelName)) thisChannel = nullptr;
+            // If the Channel couldn't be found (or isn't selected), just skip this element. Step past its end tag,
+            // otherwise the next skipCurrentElement() would skip the rest of this SignalGroup.
             if (!thisChannel) {
                 stream.skipCurrentElement();
+                stream.readNext();
                 continue;
             }
 
@@ -932,6 +1056,7 @@ void XMLInterface::parseSignalGroupsAttributes(const QByteArray &byteArray, QStr
         SignalGroup* thisSignalGroup = state->signalSources->groupByName(portName);
         if (!thisSignalGroup) {
             stream.skipCurrentElement();
+            stream.readNext();  // Step past the end tag so the next search doesn't stop on it.
             continue;
         }
 
@@ -976,7 +1101,8 @@ void XMLInterface::parseSignalGroupsAttributes(const QByteArray &byteArray, QStr
     }
 }
 
-bool XMLInterface::parseStimParameters(const QByteArray &byteArray, QString &errorMessage) const
+// If channelFilter is given, only StimChannel elements whose native name is in channelFilter are applied.
+bool XMLInterface::parseStimParameters(const QByteArray &byteArray, QString &errorMessage, const QSet<QString> *channelFilter) const
 {
     QXmlStreamReader stream(byteArray);
 
@@ -1015,9 +1141,12 @@ bool XMLInterface::parseStimParameters(const QByteArray &byteArray, QString &err
         }
 
         Channel* thisChannel = state->signalSources->channelByName(nativeChannelName);
-        // If the Channel couldn't be found, just skip this element.
+        if (channelFilter && !channelFilter->contains(nativeChannelName)) thisChannel = nullptr;
+        // If the Channel couldn't be found (or isn't selected), just skip this element. Step past its end tag,
+        // otherwise the next skipCurrentElement() would skip the following StimChannels.
         if (!thisChannel) {
             stream.skipCurrentElement();
+            stream.readNext();
             continue;
         }
 

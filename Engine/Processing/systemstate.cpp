@@ -1213,13 +1213,81 @@ void SystemState::setupGlobalSettingsLoadSave(ControllerInterface* controllerInt
     globalSettingsInterface = new XMLInterface(this, controllerInterface, XMLIncludeGlobalParameters);
 }
 
-bool SystemState::loadGlobalSettings(const QString& filename, QString &errorMessage) const
+bool SystemState::loadGlobalSettings(const QString& filename, QString &errorMessage)
 {
     if (!globalSettingsInterface) {
         std::cerr << "SystemState::loadGlobalSettings: Must run setupGlobalSettingsLoadSave first." << '\n';
         return false;
     }
-    return globalSettingsInterface->loadFile(filename, errorMessage);
+
+    // Loading a settings file replaces any channel settings still waiting from a previously loaded file.
+    clearPendingChannelSettings();
+
+    QStringList missingChannels;
+    QByteArray fileContents;
+    bool success = globalSettingsInterface->loadFile(filename, errorMessage, false, false, false, &missingChannels, &fileContents);
+
+    // Keep the settings for channels that aren't detected now, so they can be applied if they are detected later.
+    if (success && !missingChannels.isEmpty()) {
+        pendingSettingsFilename = filename;
+        pendingSettingsFileContents = fileContents;
+        pendingSettingsChannels = missingChannels;
+    }
+    return success;
+}
+
+void SystemState::clearPendingChannelSettings()
+{
+    pendingSettingsFilename.clear();
+    pendingSettingsFileContents.clear();
+    pendingSettingsChannels.clear();
+}
+
+QStringList SystemState::applyPendingChannelSettings(QString &errorMessage, QString &displaySettingsString)
+{
+    QStringList appliedChannels;
+    displaySettingsString.clear();
+    if (!globalSettingsInterface || pendingSettingsChannels.isEmpty() || running) return appliedChannels;
+
+    // Find the pending channels that the controller detects now.
+    QSet<QString> newlyPresent;
+    for (const QString& name : std::as_const(pendingSettingsChannels)) {
+        if (signalSources->channelByName(name)) newlyPresent.insert(name);
+    }
+    if (newlyPresent.isEmpty()) return appliedChannels;
+
+    QSet<QString> channelFilter = newlyPresent;
+
+    // New channels only appear on a headstage port when a rescan rebuilds that port, and rebuilding resets every
+    // channel on the port to its defaults. So apply the file's settings to all channels on such a port, not just the
+    // ones that are new.
+    for (int port = 0; port < signalSources->numPortGroups(); ++port) {
+        SignalGroup* group = signalSources->portGroupByIndex(port);
+        bool portRebuilt = false;
+        for (int i = 0; i < group->numChannels(); ++i) {
+            if (newlyPresent.contains(group->channelByIndex(i)->getNativeName())) {
+                portRebuilt = true;
+                break;
+            }
+        }
+        if (!portRebuilt) continue;
+        for (int i = 0; i < group->numChannels(); ++i) {
+            channelFilter.insert(group->channelByIndex(i)->getNativeName());
+        }
+    }
+
+    globalSettingsInterface->applyChannelSettings(pendingSettingsFileContents, channelFilter, errorMessage);
+    displaySettingsString = XMLInterface::generalConfigAttribute(pendingSettingsFileContents, "DisplaySettings");
+
+    // These channels are done. Keep waiting for any others.
+    for (const QString& name : std::as_const(newlyPresent)) {
+        pendingSettingsChannels.removeAll(name);
+    }
+    if (pendingSettingsChannels.isEmpty()) clearPendingChannelSettings();
+
+    appliedChannels = QStringList(channelFilter.begin(), channelFilter.end());
+    appliedChannels.sort();
+    return appliedChannels;
 }
 
 bool SystemState::saveGlobalSettings(const QString& filename) const

@@ -104,6 +104,7 @@ signals:
 public slots:
     void updateFromState();
     void updateForChangeHeadstages();
+    void applyPendingChannelSettings();
     void updateTimeLabel(QString text) { if (state->testMode->getValue()) return; timeLabel->setText("<b>" + text + "</b>"); }
     void updateTopStatusLabel(QString text) { topStatusLabel->setText(text); }
     void updateStatusBar(QString text) { statusBarLabel->setText(text); }

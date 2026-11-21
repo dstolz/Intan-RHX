@@ -31,6 +31,8 @@
 #ifndef XMLINTERFACE_H
 #define XMLINTERFACE_H
 #include <QString>
+#include <QStringList>
+#include <QSet>
 #include <QVector>
 
 #include "rhxglobals.h"
@@ -55,10 +57,23 @@ class XMLInterface
 public:
     XMLInterface(SystemState* state_, ControllerInterface* controllerInterface_, XMLIncludeParameters includeParameters_);
 
-    bool loadFile(const QString& filename, QString &errorMessage, bool stimLegacy = false, bool probeMap = false, bool stimOnly = false) const;
+    // If missingChannels is given, it receives the native names of channels in the file that the controller does not
+    // currently detect (their settings were skipped). If fileContents is given, it receives the raw file contents.
+    bool loadFile(const QString& filename, QString &errorMessage, bool stimLegacy = false, bool probeMap = false, bool stimOnly = false,
+                  QStringList *missingChannels = nullptr, QByteArray *fileContents = nullptr) const;
     bool saveFile(const QString& filename) const;
 
-    bool parseByteArray(const QByteArray &byteArray, QString &errorMessage, bool probeMap, bool stimOnly = false) const;
+    bool parseByteArray(const QByteArray &byteArray, QString &errorMessage, bool probeMap, bool stimOnly = false,
+                        QStringList *missingChannels = nullptr) const;
+
+    // Apply only the channel-specific settings in a previously loaded general settings file, and only to the channels
+    // named in channelFilter: per-channel settings, stimulation parameters, TCP data output, and global items that
+    // refer to one of these channels (ISI/PSTH/spectrogram/spike scope channel). Global, port, and display settings
+    // are not touched.
+    bool applyChannelSettings(const QByteArray &byteArray, const QSet<QString> &channelFilter, QString &errorMessage) const;
+
+    // Return the value of one attribute of the GeneralConfig element, or an empty string if it isn't present.
+    static QString generalConfigAttribute(const QByteArray &byteArray, const QString &attributeName);
 
     void saveAsElement(QXmlStreamWriter &stream) const; // Save as an XML element.
 
@@ -67,11 +82,12 @@ private:
 
     bool probeMapDetected(const QByteArray &byteArray, QString &errorMessage) const;
     bool parseDocumentStart(const QByteArray &byteArray, QString &errorMessage, bool &ignoreStimParameters, bool probeMap = false) const;
-    bool checkConsistentChannels(const QByteArray &byteArray, QString &errorMessage) const;
+    bool checkConsistentChannels(const QByteArray &byteArray, QString &errorMessage, QStringList *missingChannels = nullptr) const;
     bool parseGeneralConfig(const QByteArray &byteArray, QString &errorMessage) const;
-    bool parseSignalGroups(const QByteArray &byteArray, QString &errorMessage) const;
+    void parseGeneralConfigChannelItems(const QByteArray &byteArray, const QSet<QString> &channelFilter) const;
+    bool parseSignalGroups(const QByteArray &byteArray, QString &errorMessage, const QSet<QString> *channelFilter = nullptr) const;
     void parseSignalGroupsAttributes(const QByteArray &byteArray, QString &errorMessage) const;
-    bool parseStimParameters(const QByteArray &byteArray, QString &errorMessage) const;
+    bool parseStimParameters(const QByteArray &byteArray, QString &errorMessage, const QSet<QString> *channelFilter = nullptr) const;
 
     std::vector<std::string> findUninitializedChannels(std::vector<std::string> allChannels, std::vector<bool> channelInitializedFromXML) const;
 

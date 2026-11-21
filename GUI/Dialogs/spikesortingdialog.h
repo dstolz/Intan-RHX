@@ -32,6 +32,7 @@
 #define SPIKESORTINGDIALOG_H
 
 #include <QDialog>
+#include <QElapsedTimer>
 
 #include "systemstate.h"
 #include "xmlinterface.h"
@@ -40,6 +41,7 @@
 class QLabel;
 class QComboBox;
 class QSpinBox;
+class QDoubleSpinBox;
 class QPushButton;
 class QCheckBox;
 class QTabWidget;
@@ -63,6 +65,10 @@ public:
 
     void updateSpikeScope(WaveformFifo *waveformFifo, int numSamples);
     void activate();
+
+    // True while auto threshold is on and applied to all enabled channels (ControlWindow greys out
+    // Set Spike Detection Thresholds in that case, since auto would overwrite its result).
+    bool autoThresholdAllChannelsActive() const;
 
 private slots:
     void updateFromState();
@@ -88,6 +94,9 @@ private slots:
         { state->artifactsShown->setValue(enabled); }
     void setSuppressionThreshold()
         { state->suppressionThreshold->setValue(suppressionThresholdSpinBox->value()); }
+    void toggleAutoThreshold(bool enabled);
+    void autoThresholdScopeChanged(int index);
+    void autoThresholdParametersChanged();
 
 private:   
     SystemState* state;
@@ -104,6 +113,27 @@ private:
     QPushButton *setToSelectedButton;
 
     QSpinBox *thresholdSpinBox;
+
+    // Auto threshold: for each channel c, Thr_c = k * sigma_c, sigma_c = median(|x_c|) / 0.6745 on that
+    // channel's own |HIGH signal. Writes the channels' real spike thresholds, so it affects detection,
+    // TCP spike output, and saved spike events (if enabled) exactly like setting thresholds by hand.
+    enum AutoThresholdScope { AutoScopeThisChannel = 0, AutoScopeAllEnabledChannels = 1 };
+    QCheckBox *autoThresholdCheckBox;
+    QComboBox *autoScopeComboBox;
+    QDoubleSpinBox *autoMultiplierSpinBox;
+    QCheckBox *autoNegativeCheckBox;
+    QDoubleSpinBox *autoWindowSpinBox;
+    QDoubleSpinBox *autoIntervalSpinBox;
+    QLabel *autoStatusLabel;
+    QElapsedTimer autoThresholdTimer;
+    std::vector<uint16_t> noiseChunkBuffer;
+    std::vector<uint32_t> noiseHistograms;
+
+    void updateAutoThreshold(WaveformFifo *waveformFifo);
+    bool measureNoiseSigmas(WaveformFifo *waveformFifo, const std::vector<GpuWaveformAddress> &addresses,
+                            int numWords, std::vector<double> &sigmas);
+    void saveAutoThresholdSettings() const;
+    void autoThresholdModeChanged();
 
     QComboBox *voltageScaleComboBox;
 

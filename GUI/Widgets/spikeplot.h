@@ -67,6 +67,12 @@ public:
     void takeSnapshot();
     void clearSnapshot();
 
+    // When auto threshold is active, the threshold is owned by the auto-update, so mouse click and
+    // Ctrl+wheel threshold edits are ignored, and the latest sigma is displayed next to RMS.
+    void setAutoThresholdActive(bool active);
+    // Latest median-based noise estimate (uV) for the displayed channel; negative = not yet measured.
+    void setLatestSigma(double sigma) { latestSigmaCalculation = sigma; }
+
     QSize minimumSizeHint() const override;
     QSize sizeHint() const override;
 
@@ -98,6 +104,9 @@ private:
 
     double latestRmsCalculation;
     int latestSpikeRateCalculation;
+
+    bool autoThresholdActive;
+    double latestSigmaCalculation;  // Negative if not yet measured.
 
     CoordinateTranslator ct;
 

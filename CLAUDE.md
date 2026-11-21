@@ -60,3 +60,7 @@ The repository has no automated tests or test runner. To verify a change, build 
 
 - Every source file starts with the same GPL license header, and that header contains the version number (`Version 3.5.2`). Intan's version-bump commits update the header in all ~220 files together with `SOFTWARE_*_VERSION_NUMBER` in `rhxglobals.h`. Copy this header into any new file.
 - Release history is kept in `intan_rhx_release_notes.txt`.
+
+## Reference documentation
+
+- `docs/Intan_RHX_user_guide.pdf` is Intan's official RHX user guide (11 Feb 2021, updated 9 Jan 2026, 35 pages). It describes the original upstream software and is not maintained alongside our local fork's changes, so it may not match the fork's current behavior (for example, features we added such as recent settings or rescan ports are not covered); when the guide and the code disagree, the code is authoritative for the fork. Consult it for the original intended user-facing behavior before changing GUI, settings, TCP, recording, or stimulation features. Read it with the Read tool's `pages` parameter (max 20 pages per request). Page map: quick start/main window/display 4-9, analysis tools 10-13, acquisition/filters/impedance/audio/config/triggered recording/file formats 14-21, stimulation (RHS) 22-29, TCP 30-32 (including command-line startup), MATLAB import 33-35.

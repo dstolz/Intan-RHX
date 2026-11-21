@@ -95,6 +95,7 @@ SOURCES += main.cpp \
     GUI/Dialogs/renamechanneldialog.cpp \
     GUI/Dialogs/scrollablemessageboxdialog.cpp \
     GUI/Dialogs/setfileformatdialog.cpp \
+    GUI/Dialogs/settingsloadmessagedialog.cpp \
     GUI/Dialogs/setthresholdsdialog.cpp \
     GUI/Dialogs/spectrogramdialog.cpp \
     GUI/Dialogs/spikesortingdialog.cpp \
@@ -215,6 +216,7 @@ HEADERS += \
     GUI/Dialogs/renamechanneldialog.h \
     GUI/Dialogs/scrollablemessageboxdialog.h \
     GUI/Dialogs/setfileformatdialog.h \
+    GUI/Dialogs/settingsloadmessagedialog.h \
     GUI/Dialogs/setthresholdsdialog.h \
     GUI/Dialogs/spectrogramdialog.h \
     GUI/Dialogs/spikesortingdialog.h \

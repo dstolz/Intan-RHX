@@ -52,6 +52,9 @@ SpikePlot::SpikePlot(SystemState* state_, QWidget *parent) :
     latestRmsCalculation = 0.0;
     latestSpikeRateCalculation = 0;
 
+    autoThresholdActive = false;
+    latestSigmaCalculation = -1.0;
+
     tStepMsec = 1000.0 / state->sampleRate->getNumericValue();
 
     image = QImage(size(), QImage::Format_ARGB32_Premultiplied);
@@ -77,6 +80,8 @@ void SpikePlot::setWaveform(const std::string& waveName)
     } else {
         state->spikeScopeChannel->setValue("N/A");
     }
+
+    latestSigmaCalculation = -1.0;  // Sigma belongs to the previous channel; wait for a new measurement.
 
     std::map<std::string, SpikePlotHistory*>::const_iterator it = spikeHistoryMap.find(waveName);
     if (it == spikeHistoryMap.end()) {  // If data structure for this waveform does not already exist...
@@ -260,10 +265,19 @@ void SpikePlot::paintEvent(QPaintEvent * /* event */)
     plotDecorator.drawLabeledTickMarkLeft(vThreshold, ct, vThreshold, 0);
 
     // Write RMS value to display.
-    const int textBoxWidth = 180;
+    const int textBoxWidth = 280;
     const int textBoxHeight = painter.fontMetrics().height();
     QString rmsText = "RMS: " + QString::number(latestRmsCalculation, 'f', (latestRmsCalculation < 9.95) ? 1 : 0) +
             " " + MicroVoltsSymbol;
+    if (autoThresholdActive) {
+        rmsText += "  " + QString(QChar(0x03C3)) + ": ";
+        if (latestSigmaCalculation >= 0.0) {
+            rmsText += QString::number(latestSigmaCalculation, 'f', (latestSigmaCalculation < 9.95) ? 1 : 0) +
+                    " " + MicroVoltsSymbol;
+        } else {
+            rmsText += "--";
+        }
+    }
     if (latestSpikeRateCalculation > 0) {
         rmsText += "  " + QString::number(latestSpikeRateCalculation);
         if (latestSpikeRateCalculation == 1) {
@@ -288,7 +302,7 @@ void SpikePlot::closeEvent(QCloseEvent *event)
 void SpikePlot::mousePressEvent(QMouseEvent* event)  // Note: Must setMouseTracking(true) for this to work.
 {
     if (event->button() == Qt::LeftButton) {
-        if (scopeFrame.contains(event->pos())) {
+        if (scopeFrame.contains(event->pos()) && !autoThresholdActive) {
             updateCoordinateTranslator();
             int newThreshold = qRound(ct.realYFromScreenY(event->pos().y()));
             if (channel) {
@@ -321,7 +335,7 @@ void SpikePlot::wheelEvent(QWheelEvent* event)
         } else if (delta < 0) {
             state->tScaleSpikeScope->incrementIndex();
         }
-    } else if (!shiftHeld && controlHeld) {
+    } else if (!shiftHeld && controlHeld && !autoThresholdActive) {
         int threshold = 0;
         if (channel) {
             threshold = channel->getSpikeThreshold();
@@ -439,6 +453,13 @@ bool SpikePlot::updateWaveforms(WaveformFifo* waveformFifo, int numSamples)
 
     update();
     return true;
+}
+
+void SpikePlot::setAutoThresholdActive(bool active)
+{
+    autoThresholdActive = active;
+    if (!active) latestSigmaCalculation = -1.0;
+    update();
 }
 
 void SpikePlot::clearSpikes()

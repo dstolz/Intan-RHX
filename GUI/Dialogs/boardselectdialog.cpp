@@ -771,6 +771,8 @@ void BoardSelectDialog::startSoftware(ControllerType controllerType, AmplifierSa
     connect(controllerInterface, SIGNAL(setTopStatusLabel(QString)), controlWindow, SLOT(updateTopStatusLabel(QString)));
     connect(controllerInterface, SIGNAL(setHardwareFifoStatus(double)), controlWindow, SLOT(updateHardwareFifoStatus(double)));
     connect(controllerInterface, SIGNAL(cpuLoadPercent(double)), controlWindow, SLOT(updateMainCpuLoad(double)));
+    // Queued, so the channel settings are applied after the rescan (including the display update) has fully finished.
+    connect(controllerInterface, SIGNAL(rescanFinished()), controlWindow, SLOT(applyPendingChannelSettings()), Qt::QueuedConnection);
 
     connect(controllerInterface->saveThread(), SIGNAL(setStatusBar(QString)), controlWindow, SLOT(updateStatusBar(QString)));
     connect(controllerInterface->saveThread(), SIGNAL(setTimeLabel(QString)), controlWindow, SLOT(updateTimeLabel(QString)));
